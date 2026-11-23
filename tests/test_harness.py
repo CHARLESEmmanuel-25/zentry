@@ -58,11 +58,15 @@ class Harness:
                 outil = outils_par_nom.get(appel.nom)
                 if outil is None:
                     disponibles = ", ".join(outils_par_nom)
-                    resultat = (f"Erreur : l'outil '{appel.nom}' n'existe pas."
-                                f" Les outils disponibles sont : {disponibles}."
-                                )
+                    resultat = (
+                        f"Erreur : l'outil '{appel.nom}' n'existe pas. "
+                        f"Outils disponibles : {disponibles}."
+                    )
                 else:
-                    resultat = outil.executer(**appel.arguments)
+                    try:                                              # ← nouveau
+                        resultat = outil.executer(**appel.arguments)
+                    except Exception as erreur:                       # ← nouveau
+                        resultat = f"Erreur lors de l'exécution de '{appel.nom}' : {erreur}"
                 messages.append(Message(role="tool", contenu=resultat, nom_outil=appel.nom))
 
 
@@ -89,17 +93,20 @@ class FakeLLM:
 class OutilFactice:
     """Faux outil : il a une description (spec) et renvoie un résultat fixe."""
 
-    def __init__(self, nom, resultat="ok"):
+    def __init__(self, nom, resultat="ok", erreur=None):
         self.spec = SpecOutil(
             nom=nom,
             description=f"Outil factice {nom}",
             parametres={"type": "object", "properties": {}},
         )
         self.resultat = resultat
-        self.appels = []                  # les arguments reçus à chaque exécution
+        self.appels = []     
+        self.erreur = erreur             # les arguments reçus à chaque exécution
 
     def executer(self, **arguments):
         self.appels.append(arguments)
+        if self.erreur is not None:
+            raise self.erreur
         return self.resultat
 
 
@@ -237,6 +244,28 @@ class TestHarnessGardeFous(unittest.TestCase):
             message_outil = llm.messages_recus[1][-1]
             self.assertIn("heure", message_outil.contenu)
             self.assertIn("meteo", message_outil.contenu)
+
+    def test_un_outil_qui_leve_une_exception_renvoie_l_erreur_au_modele(self):
+            # Arrange : l'outil météo plante (API hors service)
+            meteo = OutilFactice("meteo", erreur=ConnectionError("API météo injoignable"))
+            llm = FakeLLM([
+                ReponseLLM(appels=[AppelOutil(nom="meteo", arguments={"ville": "Paris"})]),
+                ReponseLLM(texte="Le service météo est indisponible, réessaie plus tard."),
+            ])
+            harness = Harness(llm=llm, prompt_systeme="Tu es utile.", outils=[meteo])
+
+            # Act
+            reponse = harness.executer("Quel temps fait-il à Paris ?")
+
+            # Assert 1 : pas de plantage, le modèle a pu répondre
+            self.assertEqual(reponse, "Le service météo est indisponible, réessaie plus tard.")
+
+            # Assert 2 : le modèle a reçu l'erreur, avec son explication
+            message_outil = llm.messages_recus[1][-1]
+            self.assertEqual(message_outil.role, "tool")
+            self.assertEqual(message_outil.nom_outil, "meteo")
+            self.assertIn("erreur", message_outil.contenu.lower())
+            self.assertIn("API météo injoignable", message_outil.contenu)
 
 
 if __name__ == "__main__":
