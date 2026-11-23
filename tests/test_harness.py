@@ -57,9 +57,12 @@ class Harness:
             for appel in reponse.appels:
                 outil = outils_par_nom.get(appel.nom)
                 if outil is None:
-                    resultat = f"Erreur : l'outil '{appel.nom}' n'existe pas."
+                    disponibles = ", ".join(outils_par_nom)
+                    resultat = (f"Erreur : l'outil '{appel.nom}' n'existe pas."
+                                f" Les outils disponibles sont : {disponibles}."
+                                )
                 else:
-                    resultat = outils_par_nom[appel.nom].executer(**appel.arguments)
+                    resultat = outil.executer(**appel.arguments)
                 messages.append(Message(role="tool", contenu=resultat, nom_outil=appel.nom))
 
 
@@ -216,6 +219,24 @@ class TestHarnessGardeFous(unittest.TestCase):
         self.assertEqual(message_outil.nom_outil, "teleporter")
         self.assertIn("erreur", message_outil.contenu.lower())
         self.assertIn("teleporter", message_outil.contenu)
+
+    def test_l_erreur_d_outil_inconnu_liste_les_outils_disponibles(self):
+            # Arrange
+            heure = OutilFactice("heure")
+            meteo = OutilFactice("meteo")
+            llm = FakeLLM([
+                ReponseLLM(appels=[AppelOutil(nom="meteoo", arguments={})]),
+                ReponseLLM(texte="ok"),
+            ])
+            harness = Harness(llm=llm, prompt_systeme="Tu es utile.", outils=[heure, meteo])
+
+            # Act
+            harness.executer("Quel temps fait-il ?")
+
+            # Assert : le message d'erreur cite chaque outil disponible
+            message_outil = llm.messages_recus[1][-1]
+            self.assertIn("heure", message_outil.contenu)
+            self.assertIn("meteo", message_outil.contenu)
 
 
 if __name__ == "__main__":
