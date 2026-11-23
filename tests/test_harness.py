@@ -32,12 +32,29 @@ class SpecOutil:
     description: str
     parametres: dict
 
+class Risque:
+    LECTURE = "lecture"
+    ECRITURE = "ecriture"
+    SENSIBLE = "sensible"
+class ApprobationFixe:
+    """Fausse approbation : répond toujours la même chose et note les demandes."""
+
+    def __init__(self, reponse):
+        self.reponse = reponse
+        self.demandes = []                
+
+    def approuver(self, appel):
+        self.demandes.append(appel)
+        return self.reponse
+
 
 class Harness:
-    def __init__(self, llm, prompt_systeme, outils=()):
+    def __init__(self, llm, prompt_systeme, outils=(), max_iterations=10, approbation=None):
         self.llm = llm
         self.prompt_systeme = prompt_systeme
         self.outils = list(outils)
+        self.max_iterations = max_iterations
+        self.approbation = approbation
 
     def executer(self, texte):
         messages = [
@@ -47,7 +64,7 @@ class Harness:
         specs = [outil.spec for outil in self.outils]
         outils_par_nom = {outil.spec.nom: outil for outil in self.outils}
 
-        while True:
+        for _ in range(self.max_iterations):
             reponse = self.llm.discuter(messages=messages, outils=specs)
 
             if not reponse.appels:
@@ -62,13 +79,19 @@ class Harness:
                         f"Erreur : l'outil '{appel.nom}' n'existe pas. "
                         f"Outils disponibles : {disponibles}."
                     )
+                elif outil.risque != Risque.LECTURE and not self.approbation.approuver(appel):
+                    resultat = f"Action refusée par l'utilisateur : '{appel.nom}' n'a pas été exécuté."
                 else:
-                    try:                                              # ← nouveau
+                    try:
                         resultat = outil.executer(**appel.arguments)
-                    except Exception as erreur:                       # ← nouveau
+                    except Exception as erreur:
                         resultat = f"Erreur lors de l'exécution de '{appel.nom}' : {erreur}"
                 messages.append(Message(role="tool", contenu=resultat, nom_outil=appel.nom))
 
+        return (
+            f"Je me suis arrêté : limite de {self.max_iterations} tours atteinte "
+            "sans réponse finale."
+        )
 
 # ============================================================
 # Doublures de test (seront déplacées dans tests/fakes.py au refactor)
@@ -93,12 +116,13 @@ class FakeLLM:
 class OutilFactice:
     """Faux outil : il a une description (spec) et renvoie un résultat fixe."""
 
-    def __init__(self, nom, resultat="ok", erreur=None):
+    def __init__(self, nom, resultat="ok", erreur=None, risque=Risque.LECTURE):
         self.spec = SpecOutil(
             nom=nom,
             description=f"Outil factice {nom}",
             parametres={"type": "object", "properties": {}},
         )
+        self.risque = risque
         self.resultat = resultat
         self.appels = []     
         self.erreur = erreur             # les arguments reçus à chaque exécution
@@ -266,6 +290,69 @@ class TestHarnessGardeFous(unittest.TestCase):
             self.assertEqual(message_outil.nom_outil, "meteo")
             self.assertIn("erreur", message_outil.contenu.lower())
             self.assertIn("API météo injoignable", message_outil.contenu)
+
+    def test_s_arrete_apres_le_nombre_maximum_de_tours(self):
+            # Arrange : un modèle qui demande l'outil en boucle, sans jamais conclure
+            heure = OutilFactice("heure")
+            demande = ReponseLLM(appels=[AppelOutil(nom="heure", arguments={})])
+            llm = FakeLLM([demande] * 10)
+            harness = Harness(llm=llm, prompt_systeme="Tu es utile.", outils=[heure], max_iterations=3)
+
+            # Act
+            reponse = harness.executer("Quelle heure est-il ?")
+
+            # Assert 1 : le modèle n'a été appelé que 3 fois
+            self.assertEqual(len(llm.messages_recus), 3)
+
+            # Assert 2 : le harness explique pourquoi il s'est arrêté
+            self.assertIn("limite", reponse.lower())
+class TestHarnessApprobation(unittest.TestCase):
+
+    def test_un_outil_en_ecriture_demande_une_confirmation_avant_de_s_executer(self):
+        # Arrange
+        ajouter_note = OutilFactice("ajouter_note", resultat="Note ajoutée", risque=Risque.ECRITURE)
+        appel = AppelOutil(nom="ajouter_note", arguments={"texte": "wifi BX-4471"})
+        llm = FakeLLM([ReponseLLM(appels=[appel]), ReponseLLM(texte="C'est noté.")])
+        approbation = ApprobationFixe(True)
+        harness = Harness(
+            llm=llm, prompt_systeme="Tu es utile.", outils=[ajouter_note], approbation=approbation
+        )
+
+        # Act
+        harness.executer("Note le code wifi BX-4471")
+
+        # Assert 1 : on a demandé la confirmation pour cet appel précis
+        self.assertEqual(approbation.demandes, [appel])
+
+        # Assert 2 : confirmation accordée, donc l'outil a été exécuté
+        self.assertEqual(ajouter_note.appels, [{"texte": "wifi BX-4471"}])
+
+    def test_si_la_confirmation_est_refusee_l_outil_ne_s_execute_pas_et_le_modele_est_informe(self):
+        # Arrange
+        supprimer = OutilFactice("supprimer_notes", risque=Risque.ECRITURE)
+        llm = FakeLLM([
+            ReponseLLM(appels=[AppelOutil(nom="supprimer_notes", arguments={})]),
+            ReponseLLM(texte="D'accord, je ne supprime rien."),
+        ])
+        harness = Harness(
+            llm=llm, prompt_systeme="Tu es utile.", outils=[supprimer],
+            approbation=ApprobationFixe(False),
+        )
+
+        # Act
+        reponse = harness.executer("Supprime toutes mes notes")
+
+        # Assert 1 : l'outil n'a PAS été exécuté
+        self.assertEqual(supprimer.appels, [])
+
+        # Assert 2 : le modèle a été informé du refus
+        message_outil = llm.messages_recus[1][-1]
+        self.assertEqual(message_outil.role, "tool")
+        self.assertEqual(message_outil.nom_outil, "supprimer_notes")
+        self.assertIn("refus", message_outil.contenu.lower())
+
+        # Assert 3 : le modèle a pu répondre normalement
+        self.assertEqual(reponse, "D'accord, je ne supprime rien.")
 
 
 if __name__ == "__main__":
