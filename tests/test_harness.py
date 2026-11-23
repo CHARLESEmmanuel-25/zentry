@@ -1,5 +1,5 @@
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 # ============================================================
@@ -7,8 +7,13 @@ from dataclasses import dataclass
 # ============================================================
 
 @dataclass
+class AppelOutil:
+    nom:str
+    arguments: dict
+@dataclass
 class ReponseLLM:
-    texte: str
+    texte: str = ""
+    appels: list[AppelOutil] = field(default_factory=list)
 
 @dataclass
 class Message:
@@ -20,6 +25,9 @@ class SpecOutil:
     nom: str
     description: str
     parametres: dict
+
+
+
 
 
 class Harness:
@@ -35,6 +43,9 @@ class Harness:
         ]
         specs = [outil.spec for outil in self.outils]
         reponse = self.llm.discuter(messages=messages, outils=specs)
+        outils_dict = {outil.spec.nom: outil for outil in self.outils}
+        for appel in reponse.appels:
+            outils_dict[appel.nom].executer(**appel.arguments)
         return reponse.texte
 
 
@@ -65,8 +76,10 @@ class OutilFactice:
             parametres={"type": "object", "properties": {}},
         )
         self.resultat = resultat
+        self.appels = []
 
     def executer(self, **arguments):
+        self.appels.append(arguments)
         return self.resultat
 
 
@@ -118,6 +131,25 @@ class TestHarnessAvecOutils(unittest.TestCase):
 
         # Assert : le modèle a reçu la spec de chaque outil, dans l'ordre
         self.assertEqual(llm.outils_reçus[0], [heure.spec, meteo.spec])
+
+    def test_execute_l_outil_demande_par_le_modele_avec_ses_arguments(self):
+            # Arrange
+            heure = OutilFactice("heure")
+            meteo = OutilFactice("meteo")
+            llm = FakeLLM([
+                ReponseLLM(appels=[AppelOutil(nom="meteo", arguments={"ville": "Paris"})]),
+                ReponseLLM(texte="Il fait beau à Paris."),
+            ])
+            harness = Harness(llm=llm, prompt_systeme="Tu es utile.", outils=[heure, meteo])
+
+            # Act
+            harness.executer("Quel temps fait-il à Paris ?")
+
+            # Assert : seul l'outil demandé a été exécuté, avec les bons arguments
+            self.assertEqual(meteo.appels, [{"ville": "Paris"}])
+            self.assertEqual(heure.appels, [])
+
+
 
 if __name__ == "__main__":
     unittest.main()
