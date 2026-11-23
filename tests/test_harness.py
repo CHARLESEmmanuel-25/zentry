@@ -55,6 +55,7 @@ class Harness:
         self.outils = list(outils)
         self.max_iterations = max_iterations
         self.approbation = approbation
+    
 
     def executer(self, texte):
         messages = [
@@ -79,7 +80,7 @@ class Harness:
                         f"Erreur : l'outil '{appel.nom}' n'existe pas. "
                         f"Outils disponibles : {disponibles}."
                     )
-                elif outil.risque != Risque.LECTURE and not self.approbation.approuver(appel):
+                elif outil.risque != Risque.LECTURE and not self._est_approuve(appel):
                     resultat = f"Action refusée par l'utilisateur : '{appel.nom}' n'a pas été exécuté."
                 else:
                     try:
@@ -92,6 +93,10 @@ class Harness:
             f"Je me suis arrêté : limite de {self.max_iterations} tours atteinte "
             "sans réponse finale."
         )
+    def _est_approuve(self, appel):
+        if self.approbation is None:
+            return False
+        return self.approbation.approuver(appel)
 
 # ============================================================
 # Doublures de test (seront déplacées dans tests/fakes.py au refactor)
@@ -353,7 +358,25 @@ class TestHarnessApprobation(unittest.TestCase):
 
         # Assert 3 : le modèle a pu répondre normalement
         self.assertEqual(reponse, "D'accord, je ne supprime rien.")
+        
+    def test_sans_approbation_configuree_un_outil_en_ecriture_est_refuse(self):
+        
+        supprimer = OutilFactice("supprimer_notes", risque=Risque.ECRITURE)
+        llm = FakeLLM([
+            ReponseLLM(appels=[AppelOutil(nom="supprimer_notes", arguments={})]),
+            ReponseLLM(texte="Je n'ai pas l'autorisation de faire ça."),
+        ])
+        harness = Harness(llm=llm, prompt_systeme="Tu es utile.", outils=[supprimer])
 
+        # Act
+        reponse = harness.executer("Supprime toutes mes notes")
+
+        # Assert 1 : l'outil n'a PAS été exécuté (sûr par défaut)
+        self.assertEqual(supprimer.appels, [])
+
+        # Assert 2 : le modèle a été informé du refus, et a pu répondre
+        self.assertIn("refus", llm.messages_recus[1][-1].contenu.lower())
+        self.assertEqual(reponse, "Je n'ai pas l'autorisation de faire ça.")
 
 if __name__ == "__main__":
     unittest.main()
