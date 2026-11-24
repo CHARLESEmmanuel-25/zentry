@@ -1,0 +1,33 @@
+# Environnement virtuel
+.venv/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+
+# Outils de test et de qualité
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Secrets et config locale
+.env
+.env.*
+!.env.example
+
+# Données locales de l'agent (mémoire, journaux)
+*.db
+*.sqlite
+logs/
+
+# Système et éditeurs
+.DS_Store
+.idea/
+.vscode/
